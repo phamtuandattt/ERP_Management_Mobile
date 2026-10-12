@@ -112,6 +112,42 @@ class ErpDb {
     );
   }
 
+  Future<List<ExportSlip>> exports(LoginSession session, {String projectCode = '', String keyword = ''}) async {
+    await _ensureConnected();
+    if (!await _canViewWarehouse(session)) {
+      throw DbException('Bạn không có quyền xem kho.');
+    }
+    final project = projectCode.trim();
+    final text = keyword.trim();
+    final filters = <String>[];
+    final params = <String, dynamic>{};
+    if (project.isNotEmpty) {
+      filters.add('Project_Code = @proj');
+      params['proj'] = project;
+    }
+    if (text.isNotEmpty) {
+      filters.add(
+        '(Item_Name LIKE @kwPat OR Export_No LIKE @kwPat OR Export_To LIKE @kwPat OR Purpose LIKE @kwPat OR Project_Code LIKE @kwPat)',
+      );
+      params['kwPat'] = '%$text%';
+    }
+    final where = filters.isEmpty ? '' : 'WHERE ${filters.join(' AND ')}';
+    final rows = await _query(
+      '''
+      SELECT Export_ID, ISNULL(Export_No, N'') AS Export_No, Export_Date,
+             ISNULL(Item_Name, N'') AS Item_Name, Qty_Export,
+             ISNULL(Project_Code, N'') AS Project_Code,
+             ISNULL(Export_To, N'') AS Export_To,
+             ISNULL(Purpose, N'') AS Purpose
+      FROM Warehouse_Export
+      $where
+      ORDER BY Created_Date DESC, Export_ID DESC
+      ''',
+      params,
+    );
+    return rows.map(ExportSlip.fromRow).toList();
+  }
+
   Future<void> _ensureConnected() async {
     if (_ready && _sql.isConnected) return;
     final info = await _loadConnection();
@@ -309,6 +345,41 @@ class ProjectItem {
   final String code;
   final String name;
   String get label => name.trim().isEmpty ? code : '$code — $name';
+}
+
+class ExportSlip {
+  ExportSlip({
+    required this.id,
+    required this.exportNo,
+    required this.exportDate,
+    required this.itemName,
+    required this.qtyExport,
+    required this.projectCode,
+    required this.exportTo,
+    required this.purpose,
+  });
+
+  final int id;
+  final String exportNo;
+  final DateTime? exportDate;
+  final String itemName;
+  final double qtyExport;
+  final String projectCode;
+  final String exportTo;
+  final String purpose;
+
+  factory ExportSlip.fromRow(Map<String, dynamic> row) {
+    return ExportSlip(
+      id: _int(row, 'Export_ID'),
+      exportNo: _str(row, 'Export_No'),
+      exportDate: _date(row, 'Export_Date'),
+      itemName: _str(row, 'Item_Name'),
+      qtyExport: _double(row, 'Qty_Export'),
+      projectCode: _str(row, 'Project_Code'),
+      exportTo: _str(row, 'Export_To'),
+      purpose: _str(row, 'Purpose'),
+    );
+  }
 }
 
 class StockPageData {

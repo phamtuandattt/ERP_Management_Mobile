@@ -94,7 +94,7 @@ class _LoginPageState extends State<LoginPage> {
       await _storeLogin();
       if (!mounted) return;
       await Navigator.of(context).pushReplacement(MaterialPageRoute(
-        builder: (_) => StockPage(session: session),
+        builder: (_) => WarehouseHome(session: session),
       ));
     } on DbException catch (ex) {
       setState(() => _error = ex.message);
@@ -113,7 +113,7 @@ class _LoginPageState extends State<LoginPage> {
             const SizedBox(height: 36),
             Text('ERP Kho', style: Theme.of(context).textTheme.headlineMedium),
             const SizedBox(height: 8),
-            const Text('Đăng nhập bằng tài khoản ERP để xem tồn kho.'),
+            const Text('Đăng nhập bằng tài khoản ERP để xem kho.'),
             const SizedBox(height: 24),
             TextField(
               controller: _user,
@@ -164,6 +164,48 @@ Future<File> _loginFile() async {
   }
   if (!await dir.exists()) await dir.create(recursive: true);
   return File('${dir.path}${Platform.pathSeparator}login.json');
+}
+
+class WarehouseHome extends StatefulWidget {
+  const WarehouseHome({super.key, required this.session});
+
+  final LoginSession session;
+
+  @override
+  State<WarehouseHome> createState() => _WarehouseHomeState();
+}
+
+class _WarehouseHomeState extends State<WarehouseHome> {
+  int _index = 0;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: IndexedStack(
+        index: _index,
+        children: [
+          StockPage(session: widget.session),
+          ExportPage(session: widget.session),
+        ],
+      ),
+      bottomNavigationBar: NavigationBar(
+        selectedIndex: _index,
+        onDestinationSelected: (index) => setState(() => _index = index),
+        destinations: const [
+          NavigationDestination(
+            icon: Icon(Icons.inventory_2_outlined),
+            selectedIcon: Icon(Icons.inventory_2),
+            label: 'Tồn kho',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.outbox_outlined),
+            selectedIcon: Icon(Icons.outbox),
+            label: 'Xuất kho',
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 class StockPage extends StatefulWidget {
@@ -341,6 +383,21 @@ class _Stat extends StatelessWidget {
   }
 }
 
+String _n2(double value) {
+  final negative = value < 0;
+  final fixed = value.abs().toStringAsFixed(2);
+  final parts = fixed.split('.');
+  final digits = parts[0];
+  final buf = StringBuffer();
+  for (var i = 0; i < digits.length; i++) {
+    if (i > 0 && (digits.length - i) % 3 == 0) buf.write(',');
+    buf.write(digits[i]);
+  }
+  return '${negative ? '-' : ''}$buf.${parts[1]}';
+}
+
+Color _qtyColor(double value) => value > 0 ? const Color(0xFF059669) : const Color(0xFFDC2626);
+
 class _StockCard extends StatelessWidget {
   const _StockCard({required this.item});
   final StockItem item;
@@ -379,17 +436,192 @@ class _StockCard extends StatelessWidget {
   }
 }
 
-String _n2(double value) {
-  final negative = value < 0;
-  final fixed = value.abs().toStringAsFixed(2);
-  final parts = fixed.split('.');
-  final digits = parts[0];
-  final buf = StringBuffer();
-  for (var i = 0; i < digits.length; i++) {
-    if (i > 0 && (digits.length - i) % 3 == 0) buf.write(',');
-    buf.write(digits[i]);
-  }
-  return '${negative ? '-' : ''}$buf.${parts[1]}';
+class ExportPage extends StatefulWidget {
+  const ExportPage({super.key, required this.session});
+
+  final LoginSession session;
+
+  @override
+  State<ExportPage> createState() => _ExportPageState();
 }
 
-Color _qtyColor(double value) => value > 0 ? const Color(0xFF059669) : const Color(0xFFDC2626);
+class _ExportPageState extends State<ExportPage> {
+  final _keyword = TextEditingController();
+  List<ProjectItem> _projects = [];
+  String _project = '';
+  List<ExportSlip> _items = [];
+  bool _loadingProjects = true;
+  bool _loading = true;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadProjects();
+    _search();
+  }
+
+  @override
+  void dispose() {
+    _keyword.dispose();
+    super.dispose();
+  }
+
+  Future<void> _loadProjects() async {
+    try {
+      final list = await ErpDb.instance.projects(widget.session);
+      if (!mounted) return;
+      setState(() => _projects = list);
+    } on DbException catch (ex) {
+      if (mounted) setState(() => _error = ex.message);
+    } finally {
+      if (mounted) setState(() => _loadingProjects = false);
+    }
+  }
+
+  Future<void> _search() async {
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    try {
+      final items = await ErpDb.instance.exports(widget.session, projectCode: _project, keyword: _keyword.text.trim());
+      if (!mounted) return;
+      setState(() => _items = items);
+    } on DbException catch (ex) {
+      if (mounted) setState(() => _error = ex.message);
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final total = _items.fold<double>(0, (sum, item) => sum + item.qtyExport);
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Xuất kho'),
+        actions: [
+          IconButton(
+            tooltip: 'Đăng xuất',
+            onPressed: () {
+              Navigator.of(context).pushReplacement(MaterialPageRoute(builder: (_) => const LoginPage()));
+            },
+            icon: const Icon(Icons.logout),
+          ),
+        ],
+      ),
+      body: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+            child: Column(
+              children: [
+                TextField(
+                  controller: _keyword,
+                  textInputAction: TextInputAction.search,
+                  onSubmitted: (_) => _search(),
+                  decoration: const InputDecoration(
+                    hintText: 'Tìm số PXK, tên, xuất cho, mục đích...',
+                    prefixIcon: Icon(Icons.search),
+                    border: OutlineInputBorder(),
+                    isDense: true,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                DropdownButtonFormField<String>(
+                  initialValue: _project,
+                  isExpanded: true,
+                  decoration: const InputDecoration(border: OutlineInputBorder(), isDense: true),
+                  items: [
+                    const DropdownMenuItem(value: '', child: Text('Tất cả dự án')),
+                    ..._projects.map((p) => DropdownMenuItem(value: p.code, child: Text(p.label, overflow: TextOverflow.ellipsis))),
+                  ],
+                  onChanged: _loadingProjects ? null : (value) => setState(() => _project = value ?? ''),
+                ),
+                const SizedBox(height: 8),
+                SizedBox(
+                  width: double.infinity,
+                  child: FilledButton.icon(
+                    onPressed: _loading ? null : _search,
+                    icon: const Icon(Icons.search),
+                    label: const Text('Tìm'),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          if (!_loading)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 10, 12, 0),
+              child: Row(
+                children: [
+                  _Stat('Số phiếu', '${_items.length}'),
+                  _Stat('Tổng SL xuất', _n2(total)),
+                ],
+              ),
+            ),
+          if (_error != null)
+            Padding(
+              padding: const EdgeInsets.all(12),
+              child: Text(_error!, style: const TextStyle(color: Color(0xFFDC2626))),
+            ),
+          Expanded(child: _body()),
+        ],
+      ),
+    );
+  }
+
+  Widget _body() {
+    if (_loading) return const Center(child: CircularProgressIndicator());
+    if (_items.isEmpty) return const Center(child: Text('Chưa có phiếu xuất kho'));
+    return ListView.separated(
+      padding: const EdgeInsets.all(12),
+      itemCount: _items.length,
+      separatorBuilder: (_, _) => const SizedBox(height: 8),
+      itemBuilder: (_, index) => _ExportCard(item: _items[index]),
+    );
+  }
+}
+
+class _ExportCard extends StatelessWidget {
+  const _ExportCard({required this.item});
+  final ExportSlip item;
+
+  @override
+  Widget build(BuildContext context) {
+    final name = item.itemName.trim().isEmpty ? '—' : item.itemName.trim();
+    final date = item.exportDate;
+    final dateText = date == null ? '' : '${date.day.toString().padLeft(2, '0')}/${date.month.toString().padLeft(2, '0')}/${date.year}';
+    final detail = [
+      dateText,
+      item.exportNo.trim().isEmpty ? '' : item.exportNo.trim(),
+      item.projectCode.trim(),
+      item.exportTo.trim().isEmpty ? '' : 'Xuất cho ${item.exportTo.trim()}',
+      item.purpose.trim(),
+    ].where((part) => part.isNotEmpty).join('  ·  ');
+    return Card(
+      margin: EdgeInsets.zero,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(name, maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w600)),
+                  const SizedBox(height: 2),
+                  Text(detail.isEmpty ? '—' : detail, maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12, color: Color(0xFF94A3B8))),
+                ],
+              ),
+            ),
+            const SizedBox(width: 12),
+            Text(_n2(item.qtyExport), style: const TextStyle(fontWeight: FontWeight.w700, color: Color(0xFFDC2626))),
+          ],
+        ),
+      ),
+    );
+  }
+}
